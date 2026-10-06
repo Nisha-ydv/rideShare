@@ -1,0 +1,59 @@
+const { verifyAccessToken } = require('../utils/jwt.utils');
+const { sendError }         = require('../utils/response.utils');
+const prisma                = require('../config/db');
+
+/**
+ * Protect middleware — validates Bearer token and attaches req.user.
+ * Also checks that the refresh token is not revoked (via DB lookup).
+ */
+const protect = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return sendError(res, 401, 'Access denied. No token provided.');
+    }
+
+    const token   = authHeader.split(' ')[1];
+    const decoded = verifyAccessToken(token, 'user');
+
+    const user = await prisma.user.findUnique({
+      where : { id: decoded.id },
+      select: {
+        id             : true,
+        name           : true,
+        email          : true,
+        identifier     : true,
+        identifierType : true,
+        accountType    : true,
+        phone          : true,
+        profilePic     : true,
+        domain         : true,
+        isVerified     : true,
+        isBanned       : true,
+        isSuspended    : true,
+        isMuted        : true,
+        sessionVersion : true,
+      },
+    });
+
+    if (!user)            return sendError(res, 401, 'User not found. Token invalid.');
+    if (!user.isVerified) return sendError(res, 403, 'Account not verified. Please verify your email first.');
+    if (user.isBanned)    return sendError(res, 403, 'Your account has been banned. Contact support.');
+    if (user.isSuspended) return sendError(res, 403, 'Your account has been suspended. Contact support.');
+    if (decoded.sessionVersion !== user.sessionVersion) {
+      return sendError(res, 401, 'Session expired. Please login again.');
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    if (error.name === 'TokenExpiredError')
+      return sendError(res, 401, 'Token expired. Please login again.');
+    if (error.name === 'JsonWebTokenError')
+      return sendError(res, 401, 'Invalid token.');
+    next(error);
+  }
+};
+
+module.exports = { protect };

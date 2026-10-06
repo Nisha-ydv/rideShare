@@ -1,0 +1,509 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+enum RequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum AdminStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum NotificationType {
+  GLOBAL
+  DOMAIN
+  SCHEDULED
+}
+
+enum NotificationStatus {
+  ACTIVE
+  INACTIVE
+  SCHEDULED
+}
+
+enum ReportType {
+  USER
+  RIDE
+  CHAT
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  CLOSED
+}
+
+enum AccountType {
+  ORGANIZATION
+  GENERAL
+}
+
+enum IdentifierType {
+  ROLL_OR_EMP_ID
+  SEQUENCE
+}
+
+enum DomainStatus {
+  PENDING
+  ACTIVE
+}
+
+enum OrganizationType {
+  ORGANIZATION
+  COLLEGE
+  COMPANY
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER
+// ─────────────────────────────────────────────────────────────────────────────
+model User {
+  id             String         @id @default(uuid())
+  name           String
+  // `identifier` is the roll number / employee ID for organization users, or
+  // an auto-generated immutable sequence number for gmail.com general users.
+  identifier     String         @unique
+  identifierType IdentifierType
+  accountType    AccountType    @default(GENERAL)
+  email          String         @unique
+  password       String
+  phone          String?
+  profilePic     String?
+  domain         String
+  role           UserRole       @default(USER)
+  isVerified     Boolean        @default(false)
+  isBanned       Boolean        @default(false)
+  isSuspended    Boolean        @default(false)
+  isMuted        Boolean        @default(false)
+  sessionVersion Int            @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  rides             Ride[]
+  sentRequests      Request[]          @relation("RequesterRequests")
+  receivedRequests  Request[]          @relation("RideOwnerRequests")
+  messages          Message[]
+  refreshTokens     RefreshToken[]
+  reports           Report[]           @relation("ReportedUser")
+  notifications     UserNotification[]
+  pushSubscriptions PushSubscription[]
+
+  @@index([domain])
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN
+// ─────────────────────────────────────────────────────────────────────────────
+model Admin {
+  id          String      @id @default(uuid())
+  name        String
+  email       String      @unique
+  password    String
+  phone       String?
+  profilePic  String?
+  role        UserRole    @default(ADMIN)
+  status      AdminStatus @default(ACTIVE)
+  sessionVersion Int      @default(0)
+  domain      String?
+  createdById String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  refreshTokens AdminRefreshToken[]
+
+  @@index([email])
+  @@index([domain])
+  @@index([role])
+  @@map("admins")
+}
+
+model AdminRefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  adminId   String
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  isRevoked Boolean  @default(false)
+
+  @@index([adminId])
+  @@index([token])
+  @@map("admin_refresh_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DOMAIN
+// ─────────────────────────────────────────────────────────────────────────────
+model Domain {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  type        OrganizationType @default(ORGANIZATION)
+  // PENDING = requested by a user at signup, not yet usable for registration.
+  // ACTIVE  = approved by an admin, usable for organization-branch signup.
+  status      DomainStatus     @default(ACTIVE)
+  isActive    Boolean          @default(true) // admin-panel convenience toggle; kept in sync with status
+  requestedAt DateTime?
+  activatedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([name])
+  @@index([status])
+  @@map("domains")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANNOUNCEMENT / NOTIFICATION
+// ─────────────────────────────────────────────────────────────────────────────
+model Announcement {
+  id          String             @id @default(uuid())
+  title       String
+  content     String
+  type        NotificationType   @default(GLOBAL)
+  status      NotificationStatus @default(ACTIVE)
+  domain      String?
+  scheduledAt DateTime?
+  createdById String
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([type, status])
+  @@index([domain])
+  @@map("announcements")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER NOTIFICATION (for push notifications to specific users)
+// ─────────────────────────────────────────────────────────────────────────────
+model UserNotification {
+  id        String   @id @default(uuid())
+  title     String
+  content   String
+  isRead    Boolean  @default(false)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("user_notifications")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REPORT
+// ─────────────────────────────────────────────────────────────────────────────
+model Report {
+  id           String       @id @default(uuid())
+  type         ReportType   @default(USER)
+  reason       String
+  description  String?
+  status       ReportStatus @default(PENDING)
+  targetId     String?
+  reportedById String?
+  reportedBy   User?        @relation("ReportedUser", fields: [reportedById], references: [id])
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([type, status])
+  @@index([targetId])
+  @@map("reports")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOME MANAGEMENT - BANNER
+// ─────────────────────────────────────────────────────────────────────────────
+model Banner {
+  id        String   @id @default(uuid())
+  title     String
+  subtitle  String?
+  imageUrl  String
+  linkUrl   String?
+  isActive  Boolean  @default(true)
+  order     Int      @default(0)
+  domain    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, order])
+  @@map("banners")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOME MANAGEMENT - CAROUSEL
+// ─────────────────────────────────────────────────────────────────────────────
+model CarouselItem {
+  id        String   @id @default(uuid())
+  title     String
+  subtitle  String?
+  imageUrl  String
+  linkUrl   String?
+  isActive  Boolean  @default(true)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, order])
+  @@map("carousel_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOME MANAGEMENT - FEATURED CARD
+// ─────────────────────────────────────────────────────────────────────────────
+model FeaturedCard {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  icon        String?
+  linkUrl     String?
+  isActive    Boolean  @default(true)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, order])
+  @@map("featured_cards")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STORAGE FILE (for tracking uploaded files)
+// ─────────────────────────────────────────────────────────────────────────────
+model StorageFile {
+  id         String   @id @default(uuid())
+  url        String
+  publicId   String
+  format     String?
+  bytes      Int?
+  width      Int?
+  height     Int?
+  uploadedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([uploadedBy])
+  @@map("storage_files")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGIN ATTEMPT
+// ─────────────────────────────────────────────────────────────────────────────
+model LoginAttempt {
+  id        String   @id @default(uuid())
+  email     String
+  success   Boolean  @default(false)
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@map("login_attempts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVITY LOG
+// ─────────────────────────────────────────────────────────────────────────────
+model ActivityLog {
+  id        String   @id @default(uuid())
+  action    String
+  entity    String?
+  entityId  String?
+  details   Json?
+  adminId   String?
+  adminName String?
+  adminRole String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYSTEM SETTINGS
+// ─────────────────────────────────────────────────────────────────────────────
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RIDE
+// ─────────────────────────────────────────────────────────────────────────────
+model Ride {
+  id             String   @id @default(uuid())
+  from           String
+  to             String
+  // Coordinates are optional — the ride form uses Mappls autosuggest labels.
+  fromLat        Float?
+  fromLng        Float?
+  toLat          Float?
+  toLng          Float?
+  date           DateTime
+  time           String
+  vehicleType    String
+  availableSeats Int
+  isFull         Boolean  @default(false)
+  isExpired      Boolean  @default(false)
+  isCancelled    Boolean  @default(false)
+  reminderSent   Boolean  @default(false)
+  domain         String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  createdById String
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  requests    Request[]
+
+  @@index([domain, date])
+  @@index([createdById])
+  @@map("rides")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUEST
+// ─────────────────────────────────────────────────────────────────────────────
+model Request {
+  id                      String        @id @default(uuid())
+  status                  RequestStatus @default(PENDING)
+  phoneShared             Boolean       @default(false)
+  creatorPhoneConfirmed   Boolean       @default(false)
+  requesterPhoneConfirmed Boolean       @default(false)
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  rideId String
+  ride   Ride   @relation(fields: [rideId], references: [id], onDelete: Cascade)
+
+  requesterId String
+  requester   User   @relation("RequesterRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+
+  rideCreatorId String?
+  rideCreator   User?   @relation("RideOwnerRequests", fields: [rideCreatorId], references: [id])
+
+  chat Chat?
+
+  @@unique([rideId, requesterId])
+  @@index([requesterId])
+  @@index([rideCreatorId])
+  @@map("requests")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT & MESSAGE
+// ─────────────────────────────────────────────────────────────────────────────
+model Chat {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  requestId String  @unique
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  messages Message[]
+
+  @@map("chats")
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  text      String
+  createdAt DateTime @default(now())
+
+  chatId String
+  chat   Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  senderId String
+  sender   User   @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  isDeleted Boolean @default(false)
+
+  @@index([chatId, createdAt])
+  @@map("messages")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OTP
+// ─────────────────────────────────────────────────────────────────────────────
+model OTP {
+  id        String   @id @default(uuid())
+  email     String
+  otp       String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@map("otps")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VERIFIED EMAIL
+// ─────────────────────────────────────────────────────────────────────────────
+model VerifiedEmail {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  verifiedAt DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([email])
+  @@map("verified_emails")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REFRESH TOKEN
+// ─────────────────────────────────────────────────────────────────────────────
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  isRevoked Boolean  @default(false)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUSH SUBSCRIPTION (Web Push Notifications)
+// ─────────────────────────────────────────────────────────────────────────────
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
